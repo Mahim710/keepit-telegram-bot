@@ -4,6 +4,7 @@ import io
 import gc
 import zipfile
 import tempfile
+import threading
 from aiohttp import web, ClientSession
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
@@ -16,7 +17,7 @@ RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 PORT = int(os.getenv("PORT", 8080))
 
 ACTIVE_TIMERS = {}
-USER_PHOTOS = {}
+USER_PHOTOS = {}        # user_id -> list of (message_id, file_id)   [FIX 1]
 USER_CONVERTS = {}
 USER_PDF_TASKS = {}
 TEMP_DIR = tempfile.gettempdir()
@@ -25,6 +26,9 @@ PHOTO_PAGE_LIMIT = 20
 MAX_TOTAL_PAGES = 200
 GC_EVERY = 20
 STATUS_EVERY = 25
+
+# PyMuPDF is not thread-safe, so only ONE thread may use it at a time. [FIX 2]
+PDF_LOCK = threading.Lock()
 
 # ---- START / HELP ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,18 +47,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ---- POMODORO ----
+async def safe_edit(msg, text):
+    """Edit a message. Returns False (instead of crashing) if Telegram refuses."""
+    try:
+        await msg.edit_text(text, parse_mode="Markdown")
+        return True
+    except Exception:
+        return False
+
+async def show_stopped(context, chat_id, msg):
+    """[FIX 6] Show 'Timer stopped' only ONCE: edit the timer message,
+    and send a new message only if that edit fails."""
+    if not await safe_edit(msg, "🛑 Timer stopped."):
+        try: await context.bot.send_message(chat_id, "🛑 Timer stopped.")
+        except Exception: pass
+
 async def pomodoro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     if user_id in ACTIVE_TIMERS:
         await update.message.reply_text("⚠️ Timer already running. Use /stop first.")
         return
+
+    # [FIX 7] Both numbers are checked inside the same try,
+    # so "/pomodoro 25 abc" no longer crashes.
     if context.args:
         try:
             work_min = int(context.args[0])
+            break_min = int(context.args[1]) if len(context.args) > 1 else 5
         except ValueError:
             await update.message.reply_text("Use numbers. Example: /pomodoro 25 5")
             return
-        break_min = int(context.args[1]) if len(context.args) > 1 else 5
     else:
         work_min, break_min = 25, 5
 
@@ -68,12 +91,13 @@ async def pomodoro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     ACTIVE_TIMERS[user_id] = True
     try:
+        # ---- work time ----
         total = work_min * 60
         start_t = asyncio.get_event_loop().time()
         last = ""
         while True:
             if user_id not in ACTIVE_TIMERS:
-                await msg.edit_text("🛑 Timer stopped.", parse_mode="Markdown")
+                await show_stopped(context, chat_id, msg)   # [FIX 6]
                 return
             remaining = total - int(asyncio.get_event_loop().time() - start_t)
             if remaining <= 0: break
@@ -86,13 +110,22 @@ async def pomodoro(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception: pass
             await asyncio.sleep(0.5)
 
-        await msg.edit_text(f"✅ *Work done!* Take a {break_min} min break.\n☕ {break_min:02d}:00\n_(/stop to cancel)_", parse_mode="Markdown")
+        # [FIX 8] Work finished -> send a NEW message (edits do not make a notification)
+        old_msg = msg
+        msg = await context.bot.send_message(
+            chat_id,
+            f"✅ *Work done!* Take a {break_min} min break.\n☕ {break_min:02d}:00\n_(/stop to cancel)_",
+            parse_mode="Markdown"
+        )
+        await safe_edit(old_msg, "✅ *Work session finished.*")
+
+        # ---- break time ----
         total = break_min * 60
         start_t = asyncio.get_event_loop().time()
         last = ""
         while True:
             if user_id not in ACTIVE_TIMERS:
-                await msg.edit_text("🛑 Timer stopped.", parse_mode="Markdown")
+                await show_stopped(context, chat_id, msg)   # [FIX 6]
                 return
             remaining = total - int(asyncio.get_event_loop().time() - start_t)
             if remaining <= 0: break
@@ -104,15 +137,19 @@ async def pomodoro(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     last = text
                 except Exception: pass
             await asyncio.sleep(0.5)
-        await msg.edit_text("🔔 *Break over!* Type /pomodoro to start again.", parse_mode="Markdown")
+
+        # [FIX 8] Break finished -> send a NEW message again
+        await context.bot.send_message(chat_id, "🔔 *Break over!* Type /pomodoro to start again.", parse_mode="Markdown")
+        await safe_edit(msg, "☕ *Break finished.*")
     finally:
         ACTIVE_TIMERS.pop(user_id, None)
 
 async def stop_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in ACTIVE_TIMERS:
+        # [FIX 6] No reply here. The timer loop shows "Timer stopped" itself,
+        # so the user gets only ONE message.
         ACTIVE_TIMERS.pop(user_id, None)
-        await update.message.reply_text("🛑 Timer stopped.")
     else:
         await update.message.reply_text("You don't have any timer running.")
 
@@ -121,17 +158,20 @@ async def collect_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in USER_PHOTOS:
         USER_PHOTOS[user_id] = []
-    USER_PHOTOS[user_id].append(update.message.photo[-1].file_id)
+    # [FIX 1] Save message_id too, so photos can be put in the right order later
+    USER_PHOTOS[user_id].append((update.message.message_id, update.message.photo[-1].file_id))
 
 async def create_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in USER_PDF_TASKS and not USER_PDF_TASKS[user_id].done():
         await update.message.reply_text("⚠️ PDF creation already running. Use /stopconvert to cancel.")
         return
-    file_ids = USER_PHOTOS.get(user_id, [])
-    if not file_ids:
+    items = USER_PHOTOS.get(user_id, [])
+    if not items:
         await update.message.reply_text("📭 No photos collected. Send photos first, then /pdf.")
         return
+    # [FIX 1] Sort by message_id = the order in which the user sent the photos
+    file_ids = [file_id for _, file_id in sorted(items, key=lambda x: x[0])]
     # Clear photos immediately so user can start a new batch if needed
     USER_PHOTOS[user_id] = []
     task = asyncio.create_task(process_image_to_pdf_task(update, context, file_ids))
@@ -191,6 +231,33 @@ async def clear_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No collected photos.")
 
 # ---- PDF → IMAGE ----
+# [FIX 2] These small functions do the heavy/blocking work. They run in a
+# separate thread (asyncio.to_thread), so the bot does not freeze and
+# /stopconvert can work. Each one takes PDF_LOCK because PyMuPDF is not thread-safe.
+def open_pdf(path):
+    with PDF_LOCK:
+        pdf = pymupdf.open(path)
+        return pdf, len(pdf)
+
+def render_page(pdf, index, dpi, fmt):
+    with PDF_LOCK:
+        pix = pdf.load_page(index).get_pixmap(dpi=dpi)
+        return pix.tobytes(fmt)
+
+def add_page_to_zip(pdf, zf, index):
+    with PDF_LOCK:
+        pix = pdf.load_page(index).get_pixmap(dpi=72)
+        zf.writestr(f"page_{index + 1:04d}.jpg", pix.tobytes("jpeg"))
+
+def close_quietly(*items):
+    """[FIX 4] Close the PDF / ZIP. Takes the lock, so it waits if a worker thread
+    is still busy with the current page (this avoids closing a file in the middle of a write)."""
+    with PDF_LOCK:
+        for item in items:
+            if item is not None:
+                try: item.close()
+                except Exception: pass
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     name = (doc.file_name or "").lower()
@@ -213,43 +280,42 @@ async def convert_pdf_task(update, context, doc):
     status = await context.bot.send_message(chat_id, "🖼 Preparing conversion...")
     tmp_pdf = None
     zip_path = None
+    pdf = None
+    zf = None
     try:
         tg_file = await doc.get_file()
         tmp_pdf = os.path.join(TEMP_DIR, f"{doc.file_unique_id}.pdf")
         await tg_file.download_to_drive(tmp_pdf)
 
-        pdf = pymupdf.open(tmp_pdf)
-        total = len(pdf)
+        pdf, total = await asyncio.to_thread(open_pdf, tmp_pdf)      # [FIX 2]
 
         if total > MAX_TOTAL_PAGES:
             await status.edit_text(f"❌ PDF has *{total} pages*. Limit: *{MAX_TOTAL_PAGES}*.", parse_mode="Markdown")
-            pdf.close(); return
+            return   # the PDF is closed in "finally" below [FIX 4]
 
         if total <= PHOTO_PAGE_LIMIT:
             await status.edit_text(f"📸 Sending {total} page(s) as photos...")
-            for i, page in enumerate(pdf):
-                pix = page.get_pixmap(dpi=120)
-                await context.bot.send_photo(chat_id, photo=io.BytesIO(pix.tobytes("png")), caption=f"Page {i+1}/{total}")
-                pix = None
+            for i in range(total):
+                png = await asyncio.to_thread(render_page, pdf, i, 120, "png")   # [FIX 2]
+                await context.bot.send_photo(chat_id, photo=io.BytesIO(png), caption=f"Page {i+1}/{total}")
+                png = None
                 if (i + 1) % GC_EVERY == 0: gc.collect()
                 await asyncio.sleep(0.4)
         else:
             await status.edit_text(f"📦 PDF has {total} pages. Building ZIP...\n_(/stopconvert to cancel)_", parse_mode="Markdown")
             zip_path = os.path.join(TEMP_DIR, f"{doc.file_unique_id}.zip")
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for i, page in enumerate(pdf):
-                    pix = page.get_pixmap(dpi=72)
-                    zf.writestr(f"page_{i+1:04d}.jpg", pix.tobytes("jpeg"))
-                    pix = None
-                    if (i + 1) % GC_EVERY == 0: gc.collect()
-                    if (i + 1) % STATUS_EVERY == 0:
-                        try: await status.edit_text(f"📦 Converting... {i+1}/{total}\n_(/stopconvert to cancel)_", parse_mode="Markdown")
-                        except Exception: pass
+            zf = zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED)
+            for i in range(total):
+                await asyncio.to_thread(add_page_to_zip, pdf, zf, i)             # [FIX 2]
+                if (i + 1) % GC_EVERY == 0: gc.collect()
+                if (i + 1) % STATUS_EVERY == 0:
+                    try: await status.edit_text(f"📦 Converting... {i+1}/{total}\n_(/stopconvert to cancel)_", parse_mode="Markdown")
+                    except Exception: pass
+            zf.close()   # finish the ZIP before uploading it
             await status.edit_text(f"📤 Uploading {total}-page ZIP...")
             with open(zip_path, "rb") as f:
                 await context.bot.send_document(chat_id, document=f, filename=f"pages_{total}.zip")
 
-        pdf.close()
         try: await status.delete()
         except Exception: pass
     except asyncio.CancelledError:
@@ -259,6 +325,7 @@ async def convert_pdf_task(update, context, doc):
         try: await status.edit_text(f"❌ Error: {e}")
         except Exception: pass
     finally:
+        close_quietly(pdf, zf)   # [FIX 4] always close the PDF, even on error / cancel
         if tmp_pdf:
             try: os.remove(tmp_pdf)
             except Exception: pass
