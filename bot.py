@@ -19,7 +19,7 @@ USER_PHOTOS = {}
 USER_CONVERTS = {}
 TEMP_DIR = tempfile.gettempdir()
 
-PHOTO_PAGE_LIMIT = 20   # PDFs up to this many pages are sent as photos; larger ones as ZIP
+PHOTO_PAGE_LIMIT = 30   # PDFs up to this many pages are sent as photos; larger ones as ZIP
 
 # ---- START / HELP ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
