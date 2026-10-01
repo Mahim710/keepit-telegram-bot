@@ -20,7 +20,7 @@ USER_CONVERTS = {}
 TEMP_DIR = tempfile.gettempdir()
 
 PHOTO_PAGE_LIMIT = 20
-MAX_TOTAL_PAGES = 50  # PDFs up to this many pages are sent as photos; larger ones as ZIP
+MAX_TOTAL_PAGES = 200
 
 # ---- START / HELP ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -37,7 +37,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*🖼 PDF → Image:*\n"
         "Send a PDF file.\n"
         f"• Up to {PHOTO_PAGE_LIMIT} pages → photos\n"
-        f"• More than {PHOTO_PAGE_LIMIT} pages → ZIP file\n"
+        f"• {PHOTO_PAGE_LIMIT+1}-{MAX_TOTAL_PAGES} pages → ZIP file\n"
+        f"• Over {MAX_TOTAL_PAGES} pages → rejected\n"
         "/stopconvert – cancel a running conversion",
         parse_mode="Markdown"
     )
@@ -230,9 +231,18 @@ async def convert_pdf_task(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         pdf = pymupdf.open(tmp_pdf)
         total = len(pdf)
 
+        if total > MAX_TOTAL_PAGES:
+            await status.edit_text(
+                f"❌ This PDF has *{total} pages*. The limit is *{MAX_TOTAL_PAGES} pages* "
+                f"due to free hosting limits.\n\n"
+                f"Please split the PDF into smaller parts and try again.",
+                parse_mode="Markdown"
+            )
+            pdf.close()
+            return
+
         if total <= PHOTO_PAGE_LIMIT:
-            # Send as photos (with delay to avoid Telegram flood limits)
-            await status.edit_text(f"🖼 Converting {total} page(s) to images...")
+            await status.edit_text(f"📸 Sending {total} page(s) as photos...")
             for i, page in enumerate(pdf):
                 pix = page.get_pixmap(dpi=120)
                 img_bytes = pix.tobytes("png")
@@ -243,7 +253,6 @@ async def convert_pdf_task(update: Update, context: ContextTypes.DEFAULT_TYPE, d
                 )
                 await asyncio.sleep(0.4)
         else:
-            # Send as ZIP
             await status.edit_text(
                 f"📦 PDF has {total} pages. Building a ZIP file... this may take a minute.\n"
                 f"_(/stopconvert to cancel)_",
@@ -252,9 +261,9 @@ async def convert_pdf_task(update: Update, context: ContextTypes.DEFAULT_TYPE, d
             zip_path = os.path.join(TEMP_DIR, f"{doc.file_unique_id}.zip")
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 for i, page in enumerate(pdf):
-                    pix = page.get_pixmap(dpi=120)
-                    img_bytes = pix.tobytes("png")
-                    zf.writestr(f"page_{i+1:04d}.png", img_bytes)
+                    pix = page.get_pixmap(dpi=72)
+                    img_bytes = pix.tobytes("jpeg")
+                    zf.writestr(f"page_{i+1:04d}.jpg", img_bytes)
                     if (i + 1) % 25 == 0:
                         try:
                             await status.edit_text(
@@ -340,14 +349,14 @@ async def main_async():
     asyncio.create_task(keep_alive())
 
     application = (
-    Application.builder()
-    .token(TOKEN)
-    .concurrent_updates(True)
-    .read_timeout(30)
-    .write_timeout(60)
-    .connect_timeout(30)
-    .pool_timeout(30)
-    .build()
+        Application.builder()
+        .token(TOKEN)
+        .concurrent_updates(True)
+        .read_timeout(30)
+        .write_timeout(60)
+        .connect_timeout(30)
+        .pool_timeout(30)
+        .build()
     )
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("pomodoro", pomodoro))
