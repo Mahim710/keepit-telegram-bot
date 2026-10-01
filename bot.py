@@ -1,6 +1,7 @@
 import asyncio
 import os
 import io
+import zipfile
 import tempfile
 from aiohttp import web, ClientSession
 from telegram import Update
@@ -9,13 +10,16 @@ import img2pdf
 import pymupdf
 
 # ---- CONFIGURATION ----
-TOKEN = os.getenv("TOKEN")                       # set in Render env vars, or via "set TOKEN=..."
-RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")    # Render sets this automatically
+TOKEN = os.getenv("TOKEN")
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 PORT = int(os.getenv("PORT", 8080))
 
 ACTIVE_TIMERS = {}
 USER_PHOTOS = {}
+USER_CONVERTS = {}
 TEMP_DIR = tempfile.gettempdir()
+
+PHOTO_PAGE_LIMIT = 20   # PDFs up to this many pages are sent as photos; larger ones as ZIP
 
 # ---- START / HELP ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -30,7 +34,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2. Send /pdf → get one combined PDF\n"
         "3. /clearpdf → start over\n\n"
         "*🖼 PDF → Image:*\n"
-        "Send a PDF file → get each page as an image",
+        "Send a PDF file.\n"
+        f"• Up to {PHOTO_PAGE_LIMIT} pages → photos\n"
+        f"• More than {PHOTO_PAGE_LIMIT} pages → ZIP file\n"
+        "/stopconvert – cancel a running conversion",
         parse_mode="Markdown"
     )
 
@@ -192,50 +199,121 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = (doc.file_name or "").lower()
 
     if not name.endswith(".pdf"):
-        await update.message.reply_text("Please send a *PDF* file, or send photos then /pdf.", parse_mode="Markdown")
+        await update.message.reply_text("Please send a *PDF* file.", parse_mode="Markdown")
         return
 
     if doc.file_size and doc.file_size > 20 * 1024 * 1024:
         await update.message.reply_text("PDF too large (max 20 MB).")
         return
 
-    status = await update.message.reply_text("🖼 Converting PDF to images...")
+    user_id = update.effective_user.id
+    existing = USER_CONVERTS.get(user_id)
+    if existing and not existing.done():
+        await update.message.reply_text("⚠️ You already have a conversion running. Use /stopconvert to cancel.")
+        return
+
+    task = asyncio.create_task(convert_pdf_task(update, context, doc))
+    USER_CONVERTS[user_id] = task
+
+async def convert_pdf_task(update: Update, context: ContextTypes.DEFAULT_TYPE, doc):
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    status = await context.bot.send_message(chat_id, "🖼 Preparing conversion...")
     tmp_pdf = None
+    zip_path = None
     try:
         tg_file = await doc.get_file()
         tmp_pdf = os.path.join(TEMP_DIR, f"{doc.file_unique_id}.pdf")
         await tg_file.download_to_drive(tmp_pdf)
 
-       pdf = pymupdf.open(tmp_pdf)
+        pdf = pymupdf.open(tmp_pdf)
         total = len(pdf)
-        for i, page in enumerate(pdf):
-            pix = page.get_pixmap(dpi=150)
-            img_bytes = pix.tobytes("png")
-            await update.message.reply_photo(
-                photo=io.BytesIO(img_bytes),
-                caption=f"Page {i+1}/{total}"
-            )
-        pdf.close()
 
+        if total <= PHOTO_PAGE_LIMIT:
+            # Send as photos (with delay to avoid Telegram flood limits)
+            await status.edit_text(f"🖼 Converting {total} page(s) to images...")
+            for i, page in enumerate(pdf):
+                pix = page.get_pixmap(dpi=120)
+                img_bytes = pix.tobytes("png")
+                await context.bot.send_photo(
+                    chat_id,
+                    photo=io.BytesIO(img_bytes),
+                    caption=f"Page {i+1}/{total}"
+                )
+                await asyncio.sleep(0.4)
+        else:
+            # Send as ZIP
+            await status.edit_text(
+                f"📦 PDF has {total} pages. Building a ZIP file... this may take a minute.\n"
+                f"_(/stopconvert to cancel)_",
+                parse_mode="Markdown"
+            )
+            zip_path = os.path.join(TEMP_DIR, f"{doc.file_unique_id}.zip")
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for i, page in enumerate(pdf):
+                    pix = page.get_pixmap(dpi=120)
+                    img_bytes = pix.tobytes("png")
+                    zf.writestr(f"page_{i+1:04d}.png", img_bytes)
+                    if (i + 1) % 10 == 0:
+                        try:
+                            await status.edit_text(
+                                f"📦 Converting... {i+1}/{total} pages\n_(/stopconvert to cancel)_",
+                                parse_mode="Markdown"
+                            )
+                        except Exception:
+                            pass
+
+            await status.edit_text(f"📤 Uploading {total}-page ZIP file...")
+            with open(zip_path, "rb") as f:
+                await context.bot.send_document(
+                    chat_id,
+                    document=f,
+                    filename=f"pages_{total}.zip"
+                )
+
+        pdf.close()
         try:
             await status.delete()
         except Exception:
             pass
+
+    except asyncio.CancelledError:
+        try:
+            await context.bot.send_message(chat_id, "🛑 Conversion stopped.")
+        except Exception:
+            pass
     except Exception as e:
-        await status.edit_text(f"❌ Error: {e}")
+        try:
+            await status.edit_text(f"❌ Error: {e}")
+        except Exception:
+            pass
     finally:
         if tmp_pdf:
             try:
                 os.remove(tmp_pdf)
             except Exception:
                 pass
+        if zip_path:
+            try:
+                os.remove(zip_path)
+            except Exception:
+                pass
+        USER_CONVERTS.pop(user_id, None)
+
+async def stop_convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    task = USER_CONVERTS.get(user_id)
+    if task and not task.done():
+        task.cancel()
+        await update.message.reply_text("🛑 Stopping conversion...")
+    else:
+        await update.message.reply_text("You don't have any conversion running.")
 
 # ---- WEB SERVER (for Render) ----
 async def health(request):
     return web.Response(text="Bot is alive")
 
 async def keep_alive():
-    """Ping our own URL every 14 minutes so Render free tier never sleeps."""
     if not RENDER_URL:
         return
     async with ClientSession() as session:
@@ -271,6 +349,7 @@ async def main_async():
     application.add_handler(CommandHandler("stop", stop_timer))
     application.add_handler(CommandHandler("pdf", create_pdf))
     application.add_handler(CommandHandler("clearpdf", clear_pdf))
+    application.add_handler(CommandHandler("stopconvert", stop_convert))
     application.add_handler(MessageHandler(filters.PHOTO, collect_photo))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
