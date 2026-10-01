@@ -6,7 +6,7 @@ from aiohttp import web, ClientSession
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 import img2pdf
-import fitz  # PyMuPDF
+import pymupdf
 
 # ---- CONFIGURATION ----
 TOKEN = os.getenv("TOKEN")                       # set in Render env vars, or via "set TOKEN=..."
@@ -206,7 +206,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tmp_pdf = os.path.join(TEMP_DIR, f"{doc.file_unique_id}.pdf")
         await tg_file.download_to_drive(tmp_pdf)
 
-        pdf = fitz.open(tmp_pdf)
+       pdf = pymupdf.open(tmp_pdf)
         total = len(pdf)
         for i, page in enumerate(pdf):
             pix = page.get_pixmap(dpi=150)
