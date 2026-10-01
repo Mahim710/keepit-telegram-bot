@@ -197,10 +197,14 @@ async def process_image_to_pdf_task(update, context, file_ids):
         tmp_files = await asyncio.gather(*tasks)
 
         pdf_path = os.path.join(TEMP_DIR, f"user_{user_id}_output.pdf")
-        with open(pdf_path, "wb") as f:
-            f.write(img2pdf.convert(tmp_files))
 
-        await status.edit_text("📤 Uploading PDF...")
+def _build_pdf():
+    with open(pdf_path, "wb") as f:
+        f.write(img2pdf.convert(tmp_files))
+
+await asyncio.to_thread(_build_pdf)   # run in thread, don't freeze the bot
+
+await status.edit_text("📤 Uploading PDF...")
         with open(pdf_path, "rb") as f:
             await context.bot.send_document(chat_id, f, filename="combined.pdf")
         try: await status.delete()
@@ -370,7 +374,7 @@ async def main_async():
     await run_web_server()
     asyncio.create_task(keep_alive())
     application = (Application.builder().token(TOKEN).concurrent_updates(True)
-                   .read_timeout(30).write_timeout(60).connect_timeout(30).pool_timeout(30).build())
+                   .read_timeout(60).write_timeout(120).connect_timeout(60).pool_timeout(60)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("pomodoro", pomodoro))
     application.add_handler(CommandHandler("stop", stop_timer))
