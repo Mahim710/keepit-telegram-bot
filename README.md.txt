@@ -72,3 +72,27 @@ export TOKEN=your_bot_token_here
 
 # 4. Run the bot
 python bot.py
+☁️ Deployment (Render)
+This bot is deployed on Render free tier.
+
+Fork or clone this repo
+
+Create a new Web Service on Render and connect this repo
+
+Build Command: pip install -r requirements.txt
+
+Start Command: python bot.py
+
+Add environment variable: TOKEN = your_bot_token
+
+Deploy 🚀 
+Limitations (Free Tier)
+Max 200 pages per PDF (larger files are rejected politely)
+
+Max 20 MB PDF file size
+
+~80 photos per Image → PDF conversion (memory limit)
+
+2–3 concurrent users doing heavy conversions
+
+Free Render tier has 512 MB RAM and 750 hours/month
