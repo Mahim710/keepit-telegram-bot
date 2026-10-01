@@ -19,7 +19,8 @@ USER_PHOTOS = {}
 USER_CONVERTS = {}
 TEMP_DIR = tempfile.gettempdir()
 
-PHOTO_PAGE_LIMIT = 30   # PDFs up to this many pages are sent as photos; larger ones as ZIP
+PHOTO_PAGE_LIMIT = 20
+MAX_TOTAL_PAGES = 50  # PDFs up to this many pages are sent as photos; larger ones as ZIP
 
 # ---- START / HELP ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -254,7 +255,7 @@ async def convert_pdf_task(update: Update, context: ContextTypes.DEFAULT_TYPE, d
                     pix = page.get_pixmap(dpi=120)
                     img_bytes = pix.tobytes("png")
                     zf.writestr(f"page_{i+1:04d}.png", img_bytes)
-                    if (i + 1) % 10 == 0:
+                    if (i + 1) % 25 == 0:
                         try:
                             await status.edit_text(
                                 f"📦 Converting... {i+1}/{total} pages\n_(/stopconvert to cancel)_",
@@ -339,10 +340,14 @@ async def main_async():
     asyncio.create_task(keep_alive())
 
     application = (
-        Application.builder()
-        .token(TOKEN)
-        .concurrent_updates(True)
-        .build()
+    Application.builder()
+    .token(TOKEN)
+    .concurrent_updates(True)
+    .read_timeout(30)
+    .write_timeout(60)
+    .connect_timeout(30)
+    .pool_timeout(30)
+    .build()
     )
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("pomodoro", pomodoro))
