@@ -1,6 +1,7 @@
 import asyncio
 import os
 import io
+import gc
 import zipfile
 import tempfile
 from aiohttp import web, ClientSession
@@ -21,6 +22,8 @@ TEMP_DIR = tempfile.gettempdir()
 
 PHOTO_PAGE_LIMIT = 20
 MAX_TOTAL_PAGES = 200
+GC_EVERY = 20            # run garbage collector every N pages
+STATUS_EVERY = 25        # update status message every N pages
 
 # ---- START / HELP ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -185,6 +188,7 @@ async def create_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.remove(pdf_path)
             except Exception:
                 pass
+        gc.collect()
 
 async def clear_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -242,6 +246,7 @@ async def convert_pdf_task(update: Update, context: ContextTypes.DEFAULT_TYPE, d
             return
 
         if total <= PHOTO_PAGE_LIMIT:
+            # ---- SMALL PDF: send as photos ----
             await status.edit_text(f"📸 Sending {total} page(s) as photos...")
             for i, page in enumerate(pdf):
                 pix = page.get_pixmap(dpi=120)
@@ -251,8 +256,15 @@ async def convert_pdf_task(update: Update, context: ContextTypes.DEFAULT_TYPE, d
                     photo=io.BytesIO(img_bytes),
                     caption=f"Page {i+1}/{total}"
                 )
+                # free per-page memory
+                pix = None
+                img_bytes = None
+                if (i + 1) % GC_EVERY == 0:
+                    gc.collect()
                 await asyncio.sleep(0.4)
+
         else:
+            # ---- LARGE PDF: build ZIP ----
             await status.edit_text(
                 f"📦 PDF has {total} pages. Building a ZIP file... this may take a minute.\n"
                 f"_(/stopconvert to cancel)_",
@@ -264,7 +276,17 @@ async def convert_pdf_task(update: Update, context: ContextTypes.DEFAULT_TYPE, d
                     pix = page.get_pixmap(dpi=72)
                     img_bytes = pix.tobytes("jpeg")
                     zf.writestr(f"page_{i+1:04d}.jpg", img_bytes)
-                    if (i + 1) % 25 == 0:
+
+                    # free per-page memory immediately
+                    pix = None
+                    img_bytes = None
+
+                    # periodic garbage collection to keep RAM low
+                    if (i + 1) % GC_EVERY == 0:
+                        gc.collect()
+
+                    # periodic progress update
+                    if (i + 1) % STATUS_EVERY == 0:
                         try:
                             await status.edit_text(
                                 f"📦 Converting... {i+1}/{total} pages\n_(/stopconvert to cancel)_",
@@ -309,6 +331,7 @@ async def convert_pdf_task(update: Update, context: ContextTypes.DEFAULT_TYPE, d
             except Exception:
                 pass
         USER_CONVERTS.pop(user_id, None)
+        gc.collect()
 
 async def stop_convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
