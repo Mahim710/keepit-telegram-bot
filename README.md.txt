@@ -1,37 +1,74 @@
-# 🤖 My First Telegram Bot
+# Keepit — Telegram Bot
 
-A multi-feature Telegram bot built with Python.
+A multi-feature Telegram bot built with Python. Handles productivity and document conversion, deployed on Render with 24/7 uptime.
+
+![Python](https://img.shields.io/badge/Python-3.x-blue?logo=python&logoColor=white)
+![python-telegram-bot](https://img.shields.io/badge/python--telegram--bot-21.x-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
+![Deploy](https://img.shields.io/badge/Deployed%20on-Render-purple)
+
+---
 
 ## ✨ Features
 
-- 🍅 **Pomodoro Timer** — Custom work/break sessions with live countdown
-- 📄 **Image → PDF** — Send photos, get a combined PDF
-- 🖼 **PDF → Image** — Send a PDF, get each page as an image
+### 🍅 Pomodoro Timer
+- Customizable work and break durations
+- Live countdown updated every second
+- Cancel anytime with `/stop`
 
-## 🛠 Tech Stack
+### 📄 Image → PDF
+- Send multiple photos → receive one combined PDF
+- Downloads photos in parallel for speed
+- Works with 50–80 photos reliably
 
-- Python 3
-- python-telegram-bot
-- img2pdf, PyMuPDF
+### 🖼 PDF → Image
+- Send a PDF → receive pages as images
+- Up to 20 pages → individual photos
+- 21–200 pages → single ZIP file
+- Cancel mid-conversion with `/stopconvert`
+
+---
 
 ## 🚀 Commands
 
 | Command | Description |
 |---------|-------------|
-| `/start` | Show help menu |
+| `/start` | Show the help menu |
 | `/pomodoro` | Start 25 min work / 5 min break |
-| `/pomodoro 50 10` | Custom work/break time |
-| `/stop` | Cancel running timer |
-| `/pdf` | Combine collected photos into PDF |
+| `/pomodoro 50 10` | Custom work/break duration |
+| `/stop` | Cancel a running Pomodoro timer |
+| `/pdf` | Combine collected photos into one PDF |
 | `/clearpdf` | Clear collected photos |
+| `/stopconvert` | Cancel an ongoing conversion |
 
-## 📦 Setup
+---
 
-1. Clone this repo
-2. Install dependencies: `pip install -r requirements.txt`
-3. Set your bot token as an environment variable: `TOKEN=your_token_here`
-4. Run: `python bot.py`
+## 🛠 Tech Stack
 
-## 📜 License
+- **Python 3** — core language
+- **python-telegram-bot** — Telegram API wrapper
+- **img2pdf** — Image → PDF conversion
+- **PyMuPDF** — PDF → Image conversion
+- **aiohttp** — Web server for Render + self-ping keep-alive
+- **Render** — free 24/7 cloud hosting
 
-MIT
+---
+
+## 📦 Local Setup
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/YOUR_USERNAME/keepit-telegram-bot.git
+cd keepit-telegram-bot
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Set your bot token (get one from @BotFather on Telegram)
+# Windows:
+set TOKEN=your_bot_token_here
+# Linux/Mac:
+export TOKEN=your_bot_token_here
+
+# 4. Run the bot
+python bot.py
