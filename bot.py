@@ -32,16 +32,36 @@ PDF_LOCK = threading.Lock()
 # ---- START ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *My Bot* is ready!\n\n"
-        "*🍅 Pomodoro Timer:*\n"
+        "🤖 *Keepit Bot* — ready!\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        "*🍅 Pomodoro Timer*\n"
         "/pomodoro – 25 min work, 5 min break\n"
-        "/stop – cancel your timer\n\n"
-        "*📄 Image → PDF:*\n"
+        "/pomodoro 50 10 – custom times\n"
+        "/stop – cancel your timer\n"
+        "• Work: 1–180 min\n"
+        "• Break: 1–60 min\n\n"
+
+        "*📄 Image → PDF*\n"
         "Send photos → /pdf → get one PDF\n"
-        "/clearpdf – reset\n\n"
-        "*🖼 PDF → Image:*\n"
-        "Send a PDF → get photos or ZIP\n"
-        "/stopconvert – cancel conversion",
+        "/clearpdf – clear collected photos\n"
+        "• Max ~80 photos per PDF\n"
+        "• Photos are combined in send order\n\n"
+
+        "*🖼 PDF → Image*\n"
+        "Send a PDF → get images back\n"
+        "/stopconvert – cancel conversion\n"
+        "• Max file size: 20 MB\n"
+        "• Max pages: 200\n"
+        "• 1–20 pages → individual photos\n"
+        "• 21–200 pages → single ZIP file\n\n"
+
+        "*⚠️ Limits (Free Hosting)*\n"
+        "• 2–3 heavy conversions at once\n"
+        "• Large files may take a minute\n"
+        "• Over limits → politely rejected\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 Tip: Send files one task at a time for best speed.",
         parse_mode="Markdown"
     )
 
