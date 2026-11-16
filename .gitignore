@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+notes.txt
+bot_old_backup.py
+get-pip.py
